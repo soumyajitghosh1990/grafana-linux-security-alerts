@@ -114,3 +114,10 @@
       template:
         src: templates/docker-compose.yml.j2
         dest: /opt/monitoring_core/docker-compose.yml
+
+    #  automate container startup
+    
+    - name: Pull Images and Execute Stack Container Group via Native Shell
+      shell:
+        cmd: docker compose up -d
+        chdir: /opt/monitoring_core
