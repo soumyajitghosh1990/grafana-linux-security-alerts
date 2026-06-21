@@ -74,10 +74,9 @@
                 store: inmemory
 
           query_range:
-            results_cache:
-              cache:
-                max_size_bytes: 104857600
-
+            parallelise_shardable_queries: true
+            cache_results: false
+            
           schema_config:
             configs:
               - from: 2020-10-24
