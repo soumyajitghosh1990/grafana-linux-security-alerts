@@ -1,0 +1,123 @@
+---
+- name: Deploy Full-Stack Grafana, Prometheus, and Loki Core on Ubuntu 24
+  hosts: monitoring_core
+  become: true
+  tasks:
+    - name: Install Docker system dependencies
+      apt:
+        name: [apt-transport-https, ca-certificates, curl, gnupg, lsb-release, python3-pip]
+        state: present
+        update_cache: true
+
+    - name: Add Docker Official GPG Apt Key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker Repository to Source Lists
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Install Docker Engine and Compose Plugin
+      apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        state: present
+
+    - name: Create Production Stack Directories on Host
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /opt/monitoring_core
+        - /opt/monitoring_core/prometheus
+        - /opt/monitoring_core/loki
+        - /opt/monitoring_core/grafana/server
+        - /opt/monitoring_core/grafana/provisioning
+
+    # --- PROVIDE CORE ENGINE ENGINE CONFIGURATIONS ---
+
+    - name: Write Local Prometheus Configuration
+      copy:
+        dest: /opt/monitoring_core/prometheus/prometheus.yml
+        content: |
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+
+          scrape_configs:
+            - job_name: 'node-exporter-fleet'
+              static_configs:
+                - targets: ['localhost:9100'] # Dynamically expand with your client list or sd_configs
+
+    - name: Write Local Loki Micro-Engine Configuration
+      copy:
+        dest: /opt/monitoring_core/loki/local-config.yaml
+        content: |
+          auth_enabled: false
+
+          server:
+            http_listen_port: 3100
+            grpc_listen_port: 9096
+
+          common:
+            instance_addr: 127.0.0.1
+            path_prefix: /tmp/loki
+            storage:
+              filesystem:
+                chunks_directory: /tmp/loki/chunks
+                rules_directory: /tmp/loki/rules
+            replication_factor: 1
+            ring:
+              kvstore:
+                store: inmemory
+
+          query_range:
+            results_cache:
+              cache:
+                embedded_tracker:
+                  chunk_cache_size: 1024
+
+          schema_config:
+            configs:
+              - from: 2020-10-24
+                store: tsdb
+                object_store: filesystem
+                schema: v13
+                index:
+                  prefix: index_
+                  period: 24h
+
+          limits_config:
+            allow_structured_metadata: true
+            reject_old_samples: true
+            reject_old_samples_max_age: 168h
+
+    - name: Write Centralized Grafana System Config (grafana.ini)
+      copy:
+        dest: /opt/monitoring_core/grafana/server/grafana.ini
+        content: |
+          [smtp]
+          enabled = true
+          host = smtp.gmail.com:587
+          user = your-email@example.com
+          password = """your-app-password"""
+          skip_verify = false
+          from_address = grafana-alerts@yourdomain.com
+          from_name = Grafana Lab Security Alerts
+
+          [emails]
+          welcome_email_on_sign_up = false
+
+    # --- ORCHESTRATE CONTAINER LIFECYCLE ---
+
+    - name: Deploy Docker Compose Stack File
+      template:
+        src: templates/docker-compose.yml.j2
+        dest: /opt/monitoring_core/docker-compose.yml
+
+    - name: Pull Images and Execute Stack Container Group
+      docker_compose_v2:
+        project_src: /opt/monitoring_core
+        state: present
