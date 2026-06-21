@@ -116,8 +116,3 @@
       template:
         src: templates/docker-compose.yml.j2
         dest: /opt/monitoring_core/docker-compose.yml
-
-    - name: Pull Images and Execute Stack Container Group
-      docker_compose_v2:
-        project_src: /opt/monitoring_core
-        state: present
