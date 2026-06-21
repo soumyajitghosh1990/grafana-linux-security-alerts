@@ -1,0 +1,109 @@
+---
+- name: Universally Deploy Promtail & Node Exporter Across Fleet
+  hosts: all_clients
+  become: true
+  tasks:
+    # --- COMMON SETUP ---
+    - name: Create Promtail System Directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/promtail
+        - /etc/systemd/system/promtail.service.d
+
+    - name: Deploy Universal Promtail Configuration
+      copy:
+        dest: /etc/promtail/config.yml
+        content: |
+          server:
+            http_listen_port: 9080
+            grpc_listen_port: 0
+          positions:
+            filename: /tmp/positions.yaml
+          clients:
+            - url: "{{ loki_server_url }}"
+          scrape_configs:
+            - job_name: system-logs
+              static_configs:
+                - targets: [localhost]
+                  labels:
+                    job: varlogs
+                    __path__: /var/log/{syslog,auth.log,messages,secure}
+
+    # --- UBUNTU 24 SPECIFIC STEP ---
+    - name: Install Components on Ubuntu Family
+      when: ansible_os_family == "Debian"
+      block:
+        - name: Download Promtail and Node Exporter DEB Binaries
+          get_url:
+            url: "{{ item.url }}"
+            dest: "/tmp/{{ item.name }}.deb"
+          loop:
+            - { name: 'promtail', url: 'https://github.com/grafana/loki/releases/download/v3.0.0/promtail_3.0.0_amd64.deb' }
+            - { name: 'node-exporter', url: 'https://github.com/prometheus/node_exporter/releases/download/v1.8.1/node_exporter-1.8.1.linux-amd64.tar.gz' } # Extracted natively or via apt alternative
+          ignore_errors: true # In standard enterprise setups, pull these from your artifactory repository
+
+        - name: Install Prometheus Node Exporter via Native APT
+          apt:
+            name: prometheus-node-exporter
+            state: present
+            update_cache: true
+
+        - name: Write Ubuntu Systemd Override
+          copy:
+            dest: /etc/systemd/system/promtail.service.d/override.conf
+            content: |
+              [Service]
+              User=root
+              Group=root
+              ExecStart=
+              ExecStart=/bin/sh -c 'exec /usr/bin/promtail -config.file=/etc/promtail/config.yml -client.external-labels=server_ip=$(hostname -I | awk "{print \$1}"),host=$(hostname)'
+
+    # --- ROCKY LINUX 9 SPECIFIC STEP ---
+    - name: Install Components on Rocky 9 Family
+      when: ansible_os_family == "RedHat"
+      block:
+        - name: Install EPEL Release Repository
+          dnf:
+            name: epel-release
+            state: present
+
+        - name: Install Node Exporter via DNF
+          dnf:
+            name: golang-github-prometheus-node-exporter
+            state: present
+
+        - name: Download Promtail RPM Package
+          get_url:
+            url: https://github.com/grafana/loki/releases/download/v3.0.0/promtail-3.0.0.x86_64.rpm
+            dest: /tmp/promtail.rpm
+
+        - name: Install Promtail RPM package
+          dnf:
+            name: /tmp/promtail.rpm
+            disable_gpg_check: true
+            state: present
+
+        - name: Write Rocky 9 Systemd Override
+          copy:
+            dest: /etc/systemd/system/promtail.service.d/override.conf
+            content: |
+              [Service]
+              User=root
+              Group=root
+              ExecStart=
+              ExecStart=/bin/sh -c 'exec /bin/promtail -config.file=/etc/promtail/config.yml -client.external-labels=server_ip=$(hostname -I | awk "{print \$1}"),host=$(hostname)'
+
+    # --- FLEET-WIDE ACTIVATION ROUTINE ---
+    - name: Reload Systemd, Restart, and Enable Fleet Daemons
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+        daemon_reload: true
+        enabled: true
+        triggered_by: override.conf
+      loop:
+        - promtail
+        - "{{ 'prometheus-node-exporter' if ansible_os_family == 'Debian' else 'node-exporter' }}"
